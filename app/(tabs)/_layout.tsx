@@ -28,6 +28,15 @@ export default function Layout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="inventario"
+        options={{
+          title: "Inventario",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="cube" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

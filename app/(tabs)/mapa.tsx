@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   StyleSheet,
   View,
@@ -8,10 +8,10 @@ import {
   Platform,
 } from "react-native";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
+import * as Location from "expo-location";
 
 /**
  * CONFIG: coloca tu API KEY de OpenWeatherMap aquí
- * Consíguela en https://home.openweathermap.org/api_keys
  */
 const OPENWEATHERMAP_API_KEY = "fd2d74c664ffbbcb2245dfba30d0c781";
 
@@ -42,6 +42,26 @@ interface RainResponse {
 export default function Mapa() {
   const webviewRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
+  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(
+    null
+  );
+
+  // Pedir permisos de ubicación
+  useEffect(() => {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        console.warn("Permiso de ubicación denegado");
+        return;
+      }
+
+      const loc = await Location.getCurrentPositionAsync({});
+      setLocation({
+        lat: loc.coords.latitude,
+        lng: loc.coords.longitude,
+      });
+    })();
+  }, []);
 
   // Manejo de mensajes del WebView
   const onMessage = async (event: WebViewMessageEvent) => {
@@ -92,12 +112,22 @@ export default function Mapa() {
     }
   };
 
-  const injectedJS = createHtml();
+  if (!location) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" />
+          <Text>Obteniendo ubicación...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const injectedJS = createHtml(location.lat, location.lng);
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Monitoreo Agrícola — Mapa de Humedad</Text>
         <Text style={styles.subtitle}>
           Haz clic en un punto para ver humedad simulada y lluvia real
         </Text>
@@ -127,9 +157,6 @@ export default function Mapa() {
           OpenWeatherMap API:{" "}
           {OPENWEATHERMAP_API_KEY ? "OK" : "NO CONFIGURADA"}
         </Text>
-        <Text style={styles.footerTextSmall}>
-          (Coloca tu API key en mapa.tsx → OPENWEATHERMAP_API_KEY)
-        </Text>
       </View>
     </SafeAreaView>
   );
@@ -138,7 +165,7 @@ export default function Mapa() {
 /**
  * HTML con Leaflet embebido
  */
-function createHtml(): string {
+function createHtml(lat: number, lng: number): string {
   return `
 <!doctype html>
 <html>
@@ -173,7 +200,7 @@ function createHtml(): string {
       return '#2b83ba';
     }
 
-    const map=L.map('map').setView([20.67,-103.35],6);
+    const map=L.map('map').setView([${lat},${lng}],12);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap'}).addTo(map);
 
     const gridLayer=L.GridLayer.extend({
@@ -271,7 +298,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: "#eee",
   },
-  title: { fontSize: 18, fontWeight: "700", color: "#0f172a" },
   subtitle: { marginTop: 4, fontSize: 12, color: "#334155" },
   webviewContainer: { flex: 1 },
   webview: { flex: 1, backgroundColor: "#e6eef8" },
@@ -289,5 +315,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   footerText: { fontSize: 12, color: "#334155" },
-  footerTextSmall: { fontSize: 11, color: "#94a3b8" },
 });
+
