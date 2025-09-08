@@ -1,14 +1,14 @@
+import * as Location from "expo-location";
 import React, { useEffect, useRef, useState } from "react";
 import {
-  StyleSheet,
-  View,
-  Text,
   ActivityIndicator,
-  SafeAreaView,
   Platform,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
-import * as Location from "expo-location";
 
 /**
  * CONFIG: coloca tu API KEY de OpenWeatherMap aquí
@@ -19,7 +19,6 @@ interface ClickMessage {
   type: "clicked";
   lat: number;
   lng: number;
-  humiditySim: number;
 }
 
 interface RainInfo {
@@ -28,11 +27,11 @@ interface RainInfo {
   threeHour: number | null;
 }
 
-interface RainResponse {
-  type: "rain_response";
+interface WeatherResponse {
+  type: "weather_response";
   lat: number;
   lng: number;
-  humiditySim: number;
+  humidity: number | null;
   rainInfo: RainInfo | null;
   temp?: number | null;
   weatherDesc?: string | null;
@@ -66,29 +65,30 @@ export default function Mapa() {
   // Manejo de mensajes del WebView
   const onMessage = async (event: WebViewMessageEvent) => {
     try {
-      const data: ClickMessage = JSON.parse(event.nativeEvent.data);
+      const data = JSON.parse(event.nativeEvent.data);
 
       if (data.type === "clicked") {
-        const { lat, lng, humiditySim } = data;
+        const { lat, lng } = data;
 
-        const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${OPENWEATHERMAP_API_KEY}&units=metric`;
+        const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${OPENWEATHERMAP_API_KEY}&units=metric&lang=es`;
 
         try {
           const res = await fetch(url);
-          if (!res.ok) throw new Error("Weather API error: " + res.status);
+          if (!res.ok) throw new Error("Error en la API del clima: " + res.status);
 
           const json = await res.json();
+
           const rainInfo: RainInfo = {
             available: !!json.rain,
             oneHour: json.rain?.["1h"] ?? null,
             threeHour: json.rain?.["3h"] ?? null,
           };
 
-          const payload: RainResponse = {
-            type: "rain_response",
+          const payload: WeatherResponse = {
+            type: "weather_response",
             lat,
             lng,
-            humiditySim,
+            humidity: json.main?.humidity ?? null,
             rainInfo,
             temp: json.main?.temp ?? null,
             weatherDesc: json.weather?.[0]?.description ?? null,
@@ -96,19 +96,24 @@ export default function Mapa() {
 
           webviewRef.current?.postMessage(JSON.stringify(payload));
         } catch (err: any) {
-          const payload: RainResponse = {
-            type: "rain_response",
+          const payload: WeatherResponse = {
+            type: "weather_response",
             lat,
             lng,
-            humiditySim,
+            humidity: null,
             rainInfo: null,
             error: err.message,
           };
           webviewRef.current?.postMessage(JSON.stringify(payload));
         }
       }
+
+      if (data.type === "parcel_selected") {
+        console.log("📌 Parcela seleccionada:", data.coords);
+        // 👉 Aquí puedes guardar coords en SQLite, Firebase o tu backend
+      }
     } catch (err) {
-      console.warn("onMessage parse error:", err);
+      console.warn("Error al procesar mensaje:", err);
     }
   };
 
@@ -129,7 +134,8 @@ export default function Mapa() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.subtitle}>
-          Haz clic en un punto para ver humedad simulada y lluvia real
+          Haz clic en un punto para ver humedad real, lluvia y temperatura o dibuja
+          un cuadrante
         </Text>
       </View>
 
@@ -154,8 +160,8 @@ export default function Mapa() {
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>
-          OpenWeatherMap API:{" "}
-          {OPENWEATHERMAP_API_KEY ? "OK" : "NO CONFIGURADA"}
+          API de OpenWeatherMap:{" "}
+          {OPENWEATHERMAP_API_KEY ? "CONFIGURADA" : "NO CONFIGURADA"}
         </Text>
       </View>
     </SafeAreaView>
@@ -163,7 +169,7 @@ export default function Mapa() {
 }
 
 /**
- * HTML con Leaflet embebido
+ * HTML con Leaflet + Draw + capas satélite + filtros OWM
  */
 function createHtml(lat: number, lng: number): string {
   return `
@@ -172,111 +178,136 @@ function createHtml(lat: number, lng: number): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Leaflet Grid Heatmap</title>
+  <title>Mapa de Parcelas</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
   <style>
     html, body, #map { height: 100%; margin: 0; padding: 0; }
     .info-box { font-family: Arial; font-size: 14px; }
     .popup-title { font-weight: bold; margin-bottom: 6px; }
+    .user-location-marker { background: transparent !important; border: none !important; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script>
-    function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
-    function simulatedHumidity(lat,lng){
-      const a=Math.sin(lat*0.1)*20;
-      const b=Math.cos(lng*0.1)*20;
-      const c=Math.sin((lat+lng)*0.05)*15;
-      const d=(Math.sin(lat*0.35)+Math.cos(lng*0.4))*8;
-      let val=50+a+b+c+d;
-      return clamp(Math.round(val),0,100);
-    }
-    function humidityToColor(h){
-      if(h<=20) return '#d73027';
-      if(h<=40) return '#f46d43';
-      if(h<=70) return '#66bd63';
-      return '#2b83ba';
-    }
+    const map = L.map('map').setView([${lat}, ${lng}], 13);
 
-    const map=L.map('map').setView([${lat},${lng}],12);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap'}).addTo(map);
+    // Capas base
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    });
 
-    const gridLayer=L.GridLayer.extend({
-      createTile:function(coords){
-        const tile=document.createElement('canvas');
-        const size=this.getTileSize();
-        tile.width=size.x; tile.height=size.y;
-        const ctx=tile.getContext('2d');
+    const satelite = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+      { attribution: 'Imágenes © Esri y colaboradores' }
+    );
 
-        const nw=coordsToLatLng(coords.x,coords.y,coords.z);
-        const se=coordsToLatLng(coords.x+1,coords.y+1,coords.z);
-        const steps=24, stepX=size.x/steps, stepY=size.y/steps;
+    osm.addTo(map);
 
-        for(let i=0;i<steps;i++){
-          for(let j=0;j<steps;j++){
-            const tX=(i+0.5)/steps, tY=(j+0.5)/steps;
-            const lat=nw.lat+(se.lat-nw.lat)*tY;
-            const lng=nw.lng+(se.lng-nw.lng)*tX;
-            const h=simulatedHumidity(lat,lng);
-            ctx.fillStyle=humidityToColor(h);
-            ctx.globalAlpha=0.12;
-            ctx.fillRect(i*stepX,j*stepY,stepX+1,stepY+1);
-          }
-        }
-        return tile;
+    // --- Capas climáticas reales OpenWeatherMap ---
+    const precipitation = L.tileLayer(
+      "https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${OPENWEATHERMAP_API_KEY}",
+      { attribution: "Datos © OpenWeatherMap", opacity: 0.6 }
+    );
+
+    const temperature = L.tileLayer(
+      "https://tile.openweathermap.org/map/temp_new/{z}/{x}/{y}.png?appid=${OPENWEATHERMAP_API_KEY}",
+      { attribution: "Datos © OpenWeatherMap", opacity: 0.5 }
+    );
+
+    const clouds = L.tileLayer(
+      "https://tile.openweathermap.org/map/clouds_new/{z}/{x}/{y}.png?appid=${OPENWEATHERMAP_API_KEY}",
+      { attribution: "Datos © OpenWeatherMap", opacity: 0.5 }
+    );
+
+    // Control de capas
+    L.control.layers(
+      { "Mapa": osm, "Satélite": satelite },
+      { "🌧️ Precipitación": precipitation, "🌡️ Temperatura": temperature, "☁️ Nubes": clouds }
+    ).addTo(map);
+
+    // --- Dibujo de parcelas ---
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    const drawControl = new L.Control.Draw({
+      edit: { featureGroup: drawnItems },
+      draw: {
+        polyline: false,
+        rectangle: true,
+        polygon: true,
+        circle: false,
+        marker: false,
+        circlemarker: false
       }
     });
-    function coordsToLatLng(x,y,z){
-      const n=Math.pow(2,z);
-      const lng_deg=x/n*360-180;
-      const lat_rad=Math.atan(Math.sinh(Math.PI*(1-2*y/n)));
-      return {lat:lat_rad*180/Math.PI,lng:lng_deg};
-    }
-    const myGrid=new gridLayer(); myGrid.addTo(map);
-    map.on('moveend zoomend',()=>setTimeout(()=>myGrid.redraw(),120));
+    map.addControl(drawControl);
 
+    // Capturar evento de creación de parcela
+    map.on(L.Draw.Event.CREATED, function (e) {
+      const layer = e.layer;
+      drawnItems.addLayer(layer);
+
+      const coords = layer.getLatLngs()[0].map(p => [p.lat, p.lng]);
+
+      const payload = {
+        type: 'parcel_selected',
+        coords: coords
+      };
+
+      window.ReactNativeWebView?.postMessage(JSON.stringify(payload));
+    });
+
+    // Evento click para clima puntual
     let lastMarker=null;
-    function showPopup(latlng,humiditySim,rainData){
+    function showPopup(latlng, weatherData){
       if(lastMarker) map.removeLayer(lastMarker);
       const marker=L.marker(latlng).addTo(map);
-      let html='<div class="popup-title">Punto seleccionado</div>';
-      html+='<div><b>Coords:</b> '+latlng.lat.toFixed(5)+', '+latlng.lng.toFixed(5)+'</div>';
-      html+='<div><b>Humedad:</b> '+humiditySim+'%</div>';
-      if(!rainData){
-        html+='<div><em>Buscando lluvia...</em></div>';
-      }else if(rainData.error){
-        html+='<div style="color:red"><b>Error:</b> '+rainData.error+'</div>';
+      let html='<div class="popup-title">Datos Meteorológicos</div>';
+      html+='<div><b>Coordenadas:</b> '+latlng.lat.toFixed(5)+', '+latlng.lng.toFixed(5)+'</div>';
+      
+      if(!weatherData){
+        html+='<div><em>Obteniendo datos del clima...</em></div>';
+      }else if(weatherData.error){
+        html+='<div style="color:red"><b>Error:</b> '+weatherData.error+'</div>';
       }else{
-        if(rainData.rainInfo?.available){
-          html+='<div><b>Lluvia 1h:</b> '+(rainData.rainInfo.oneHour ?? "n/d")+' mm</div>';
-          html+='<div><b>Lluvia 3h:</b> '+(rainData.rainInfo.threeHour ?? "n/d")+' mm</div>';
+        if(weatherData.humidity !== null){
+          html+='<div><b>Humedad:</b> '+weatherData.humidity+'%</div>';
+        }
+        if(weatherData.temp !== null && weatherData.temp !== undefined){
+          html+='<div><b>Temperatura:</b> '+weatherData.temp.toFixed(1)+' °C</div>';
+        }
+        if(weatherData.weatherDesc){
+          html+='<div><b>Condición:</b> '+weatherData.weatherDesc+'</div>';
+        }
+        if(weatherData.rainInfo?.available){
+          const rain1h = weatherData.rainInfo.oneHour !== null ? weatherData.rainInfo.oneHour.toFixed(1) : 'n/d';
+          const rain3h = weatherData.rainInfo.threeHour !== null ? weatherData.rainInfo.threeHour.toFixed(1) : 'n/d';
+          html+='<div><b>Lluvia (1 hora):</b> '+rain1h+' mm</div>';
+          html+='<div><b>Lluvia (3 horas):</b> '+rain3h+' mm</div>';
         }else{
-          html+='<div><b>Precipitación:</b> 0 mm</div>';
-        }
-        if(rainData.temp!==undefined){
-          html+='<div><b>Temp:</b> '+rainData.temp+' °C</div>';
-        }
-        if(rainData.weatherDesc){
-          html+='<div><b>Clima:</b> '+rainData.weatherDesc+'</div>';
+          html+='<div><b>Precipitación:</b> Sin lluvia</div>';
         }
       }
       marker.bindPopup(html).openPopup();
       lastMarker=marker;
     }
+
     map.on('click',function(e){
-      const h=simulatedHumidity(e.latlng.lat,e.latlng.lng);
-      showPopup(e.latlng,h,null);
-      const payload={type:'clicked',lat:e.latlng.lat,lng:e.latlng.lng,humiditySim:h};
+      showPopup(e.latlng, null);
+      const payload={type:'clicked',lat:e.latlng.lat,lng:e.latlng.lng};
       window.ReactNativeWebView?.postMessage(JSON.stringify(payload));
     });
+
     function handleMsg(evt){
       try{
         const data=JSON.parse(evt.data);
-        if(data.type==='rain_response'){
+        if(data.type==='weather_response'){
           const latlng=L.latLng(data.lat,data.lng);
-          showPopup(latlng,data.humiditySim,data);
+          showPopup(latlng, data);
         }
       }catch{}
     }
@@ -316,4 +347,3 @@ const styles = StyleSheet.create({
   },
   footerText: { fontSize: 12, color: "#334155" },
 });
-
